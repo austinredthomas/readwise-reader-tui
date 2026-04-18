@@ -2,6 +2,8 @@
 
 A Terminal User Interface (TUI) for Readwise Reader built in Rust using Ratatui.
 
+![screenshot of the app](https://i.imgur.com/xtMhD4I.png)
+
 ## Features
 
 - Columnar list view displaying Title, Author, and Source (Site Name or Hostname).
