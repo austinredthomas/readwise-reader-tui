@@ -1,6 +1,6 @@
 # Readwise Reader TUI
 
-A secure Terminal User Interface (TUI) for Readwise Reader built in Rust using Ratatui.
+A Terminal User Interface (TUI) for Readwise Reader built in Rust using Ratatui.
 
 ## Features
 
@@ -49,7 +49,6 @@ The `config.toml` file should be placed in your OS-specific configuration direct
 Example `config.toml`:
 
 ```toml
-token = "your_api_token_here"
 default_location = "new"
 ```
 
@@ -68,7 +67,3 @@ cargo run
 - **Enter**: Open the selected article for reading.
 - **n, p**: Navigate to the next or previous page of articles.
 - **q, Esc**: Go back to the list view or quit the application.
-
-## Security
-
-This application handles sensitive API tokens. Ensure that your `config.toml` and `.env` files are never committed to version control. A `.gitignore` is provided to assist with this.
