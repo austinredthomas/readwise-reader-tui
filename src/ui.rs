@@ -19,7 +19,7 @@ fn get_hostname(url_str: &str) -> String {
 
 pub enum ViewState {
     List,
-    Read(Document),
+    Read { doc: Document, content: String },
 }
 
 pub fn draw(
@@ -58,7 +58,7 @@ pub fn draw(
     // 2. Main Content
     match view {
         ViewState::List => {
-            let header_cells = ["Title", "Author", "Source"]
+            let header_cells = ["", "Title", "Author", "Source"]
                 .iter()
                 .map(|h| Cell::from(*h).style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
@@ -82,7 +82,10 @@ pub fn draw(
                     get_hostname(&doc.source_url)
                 };
 
+                let unread_marker = if !doc.seen { "●" } else { " " };
+
                 Row::new(vec![
+                    Cell::from(unread_marker).style(Style::default().fg(Color::Yellow)),
                     Cell::from(doc.title.clone()),
                     Cell::from(doc.author.as_deref().unwrap_or("Unknown")),
                     Cell::from(source_display),
@@ -93,6 +96,7 @@ pub fn draw(
             let table = Table::new(
                 rows,
                 [
+                    Constraint::Length(1),
                     Constraint::Percentage(40),
                     Constraint::Percentage(20),
                     Constraint::Percentage(40),
@@ -105,17 +109,8 @@ pub fn draw(
 
             f.render_widget(table, chunks[1]);
         }
-        ViewState::Read(doc) => {
-            let content = if let Some(html) = &doc.html_content {
-                match html2text::from_read(html.as_bytes(), f.area().width as usize - 4) {
-                    Ok(text) => text,
-                    Err(e) => format!("Error parsing content: {}", e),
-                }
-            } else {
-                "Fetching content...".to_string()
-            };
-
-            let p = Paragraph::new(content)
+        ViewState::Read { doc, content } => {
+            let p = Paragraph::new(content.as_str())
                 .block(Block::default().borders(Borders::ALL).title(format!(" {} ", doc.title)))
                 .wrap(Wrap { trim: true })
                 .scroll((scroll_offset, 0));
@@ -125,8 +120,8 @@ pub fn draw(
 
     // 3. Footer
     let help_text = match view {
-        ViewState::List => " [j/k] Scroll | [Enter] Read | [1-4] Tabs | [n/p] Page | [q] Quit ",
-        ViewState::Read(_) => " [j/k] Scroll | [Esc/q] Back to list ",
+        ViewState::List => " [j/k] Scroll | [Enter] Read | [m] Toggle Read | [a] Archive | [1-4] Tabs | [n/p] Page | [q] Quit ",
+        ViewState::Read { .. } => " [j/k] Scroll | [m] Toggle Read | [a] Archive | [Esc/q] Back to list ",
     };
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(help_text, Style::default().add_modifier(Modifier::DIM)),

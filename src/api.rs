@@ -12,10 +12,19 @@ pub struct Document {
     pub source_url: String,
     pub location: String,
     pub category: String,
+    pub seen: bool,
     pub html_content: Option<String>,
     pub created_at: String,
     pub published_date: Option<String>,
     pub summary: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateDocumentRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seen: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,5 +77,19 @@ impl ReaderClient {
             .await?;
 
         Ok(res)
+    }
+
+    pub async fn update_document(
+        &self,
+        id: &str,
+        update: UpdateDocumentRequest,
+    ) -> Result<()> {
+        self.http
+            .patch(&format!("https://readwise.io/api/v3/update/{}/", id))
+            .json(&update)
+            .send()
+            .await?;
+
+        Ok(())
     }
 }

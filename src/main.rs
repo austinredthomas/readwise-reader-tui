@@ -12,7 +12,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::api::{ReaderClient, Document};
+use crate::api::{ReaderClient, Document, UpdateDocumentRequest};
 use crate::ui::ViewState;
 
 const FEED_REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
@@ -67,12 +67,72 @@ impl App {
         }
     }
 
-    async fn fetch_article_content(&mut self, doc: Document) {
+    async fn fetch_article_content(&mut self, doc: Document, width: u16) {
         match self.client.list_documents(&self.location, Some(doc.id.clone()), true).await {
             Ok(res) => {
                 if let Some(article) = res.results.into_iter().next() {
-                    self.view = ViewState::Read(article);
+                    let content = if let Some(html) = &article.html_content {
+                        match html2text::from_read(html.as_bytes(), width as usize - 4) {
+                            Ok(text) => text,
+                            Err(e) => format!("Error parsing content: {}", e),
+                        }
+                    } else {
+                        "No content available.".to_string()
+                    };
+                    self.view = ViewState::Read { doc: article, content };
                     self.scroll_offset = 0;
+                }
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+            }
+        }
+    }
+
+    async fn toggle_seen(&mut self, doc_id: String, current_seen: bool) {
+        let new_seen = !current_seen;
+        match self.client.update_document(&doc_id, UpdateDocumentRequest {
+            seen: Some(new_seen),
+            location: None,
+        }).await {
+            Ok(_) => {
+                // Update local state
+                if let ViewState::Read { ref mut doc, .. } = self.view {
+                    if doc.id == doc_id {
+                        doc.seen = new_seen;
+                    }
+                }
+                for doc in &mut self.articles {
+                    if doc.id == doc_id {
+                        doc.seen = new_seen;
+                    }
+                }
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+            }
+        }
+    }
+
+    async fn archive_document(&mut self, doc_id: String) {
+        match self.client.update_document(&doc_id, UpdateDocumentRequest {
+            seen: Some(true),
+            location: Some("archive".to_string()),
+        }).await {
+            Ok(_) => {
+                // Remove from local list if present
+                self.articles.retain(|d| d.id != doc_id);
+                if self.selected_index >= self.articles.len() && !self.articles.is_empty() {
+                    self.selected_index = self.articles.len() - 1;
+                }
+                let mut go_back = false;
+                if let ViewState::Read { doc, .. } = &self.view {
+                    if doc.id == doc_id {
+                        go_back = true;
+                    }
+                }
+                if go_back {
+                    self.view = ViewState::List;
                 }
             }
             Err(e) => {
@@ -144,7 +204,21 @@ async fn main() -> Result<()> {
                             KeyCode::Enter => {
                                 if let Some(doc) = app.articles.get(app.selected_index) {
                                     let doc_clone = doc.clone();
-                                    app.fetch_article_content(doc_clone).await;
+                                    let width = terminal.size()?.width;
+                                    app.fetch_article_content(doc_clone, width).await;
+                                }
+                            }
+                            KeyCode::Char('m') => {
+                                if let Some(doc) = app.articles.get(app.selected_index) {
+                                    let id = doc.id.clone();
+                                    let seen = doc.seen;
+                                    app.toggle_seen(id, seen).await;
+                                }
+                            }
+                            KeyCode::Char('a') => {
+                                if let Some(doc) = app.articles.get(app.selected_index) {
+                                    let id = doc.id.clone();
+                                    app.archive_document(id).await;
                                 }
                             }
                             KeyCode::Char('1') => {
@@ -181,16 +255,35 @@ async fn main() -> Result<()> {
                             }
                             _ => {}
                         },
-                        ViewState::Read(_) => match key.code {
+                        ViewState::Read { doc, content } => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') => {
                                 app.view = ViewState::List;
                                 app.scroll_offset = 0;
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
-                                app.scroll_offset = app.scroll_offset.saturating_add(1);
+                                let lines = content.lines().count() as u16;
+                                let height = terminal.size()?.height.saturating_sub(4); // -3 for header, -1 for footer
+                                if app.scroll_offset + height < lines {
+                                    app.scroll_offset = app.scroll_offset.saturating_add(1);
+                                }
+
+                                // Auto-mark as read if near bottom
+                                if !doc.seen && app.scroll_offset + height >= lines.saturating_sub(2) {
+                                    let id = doc.id.clone();
+                                    app.toggle_seen(id, false).await;
+                                }
                             }
                             KeyCode::Char('k') | KeyCode::Up => {
                                 app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                            }
+                            KeyCode::Char('m') => {
+                                let id = doc.id.clone();
+                                let seen = doc.seen;
+                                app.toggle_seen(id, seen).await;
+                            }
+                            KeyCode::Char('a') => {
+                                let id = doc.id.clone();
+                                app.archive_document(id).await;
                             }
                             _ => {}
                         },
