@@ -10,9 +10,12 @@ use crossterm::{
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::time::{Duration, Instant};
 
 use crate::api::{ReaderClient, Document};
 use crate::ui::ViewState;
+
+const FEED_REFRESH_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 
 struct App {
     client: ReaderClient,
@@ -25,6 +28,7 @@ struct App {
     prev_page_cursors: Vec<Option<String>>,
     error: Option<String>,
     scroll_offset: u16,
+    last_feed_update: Instant,
 }
 
 impl App {
@@ -41,6 +45,7 @@ impl App {
             prev_page_cursors: Vec::new(),
             error: None,
             scroll_offset: 0,
+            last_feed_update: Instant::now(),
         }
     }
 
@@ -91,6 +96,14 @@ async fn main() -> Result<()> {
 
     let mut should_quit = false;
     while !should_quit {
+        // Auto-update feed if viewing it
+        if app.location == "feed" && app.last_feed_update.elapsed() >= FEED_REFRESH_INTERVAL {
+            if let ViewState::List = app.view {
+                app.fetch_articles(None, false).await;
+                app.last_feed_update = Instant::now();
+            }
+        }
+
         terminal.draw(|f| {
             ui::draw(
                 f,
@@ -153,7 +166,9 @@ async fn main() -> Result<()> {
                                 app.location = "feed".to_string();
                                 app.prev_page_cursors.clear();
                                 app.fetch_articles(None, false).await;
+                                app.last_feed_update = Instant::now();
                             }
+
                             KeyCode::Char('n') => {
                                 if let Some(cursor) = app.next_page_cursor.clone() {
                                     app.fetch_articles(Some(cursor), true).await;
