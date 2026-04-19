@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs, Wrap},
     Frame,
 };
 use url::Url;
@@ -26,7 +26,7 @@ pub fn draw(
     f: &mut Frame,
     view: &ViewState,
     articles: &[Document],
-    selected_index: usize,
+    table_state: &mut TableState,
     location: &str,
     error: &Option<String>,
     scroll_offset: u16,
@@ -66,13 +66,7 @@ pub fn draw(
                 .height(1)
                 .bottom_margin(1);
 
-            let rows = articles.iter().enumerate().map(|(i, doc)| {
-                let style = if i == selected_index {
-                    Style::default().bg(Color::Blue).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-
+            let rows = articles.iter().map(|doc| {
                 // Better source display logic
                 let source_display = if let Some(sn) = &doc.site_name {
                     if sn != "Reader RSS" { sn.clone() } else { get_hostname(&doc.source_url) }
@@ -82,7 +76,7 @@ pub fn draw(
                     get_hostname(&doc.source_url)
                 };
 
-                let unread_marker = if !doc.seen { "●" } else { " " };
+                let unread_marker = if !doc.is_seen() { "●" } else { " " };
 
                 Row::new(vec![
                     Cell::from(unread_marker).style(Style::default().fg(Color::Yellow)),
@@ -90,7 +84,6 @@ pub fn draw(
                     Cell::from(doc.author.as_deref().unwrap_or("Unknown")),
                     Cell::from(source_display),
                 ])
-                .style(style)
             });
 
             let table = Table::new(
@@ -107,7 +100,7 @@ pub fn draw(
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol(">> ");
 
-            f.render_widget(table, chunks[1]);
+            f.render_stateful_widget(table, chunks[1], table_state);
         }
         ViewState::Read { doc, content } => {
             let p = Paragraph::new(content.as_str())

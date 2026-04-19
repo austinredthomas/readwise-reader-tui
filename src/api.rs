@@ -10,13 +10,21 @@ pub struct Document {
     pub source: Option<String>,
     pub site_name: Option<String>,
     pub source_url: String,
-    pub location: String,
-    pub category: String,
-    pub seen: bool,
+    pub location: Option<String>,
+    pub category: Option<String>,
     pub html_content: Option<String>,
     pub created_at: String,
+    pub first_opened_at: Option<String>,
+    pub last_opened_at: Option<String>,
+    pub reading_progress: f32,
     pub published_date: Option<String>,
     pub summary: Option<String>,
+}
+
+impl Document {
+    pub fn is_seen(&self) -> bool {
+        self.first_opened_at.is_some()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -57,11 +65,15 @@ impl ReaderClient {
         &self,
         location: &str,
         page_cursor: Option<String>,
+        document_id: Option<String>,
         with_html: bool,
     ) -> Result<ListResponse> {
         let mut query = vec![("location", location.to_string())];
         if let Some(cursor) = page_cursor {
             query.push(("pageCursor", cursor));
+        }
+        if let Some(id) = document_id {
+            query.push(("id", id));
         }
         if with_html {
             query.push(("withHtmlContent", "true".to_string()));

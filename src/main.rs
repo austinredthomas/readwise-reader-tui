@@ -8,7 +8,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, widgets::TableState, Terminal};
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ struct App {
     client: ReaderClient,
     location: String,
     articles: Vec<Document>,
-    selected_index: usize,
+    table_state: TableState,
     view: ViewState,
     current_cursor: Option<String>,
     next_page_cursor: Option<String>,
@@ -38,7 +38,7 @@ impl App {
             client,
             location: config.default_location,
             articles: Vec::new(),
-            selected_index: 0,
+            table_state: TableState::default(),
             view: ViewState::List,
             current_cursor: None,
             next_page_cursor: None,
@@ -50,7 +50,7 @@ impl App {
     }
 
     async fn fetch_articles(&mut self, cursor: Option<String>, push_history: bool) {
-        match self.client.list_documents(&self.location, cursor.clone(), false).await {
+        match self.client.list_documents(&self.location, cursor.clone(), None, false).await {
             Ok(res) => {
                 if push_history {
                     self.prev_page_cursors.push(self.current_cursor.clone());
@@ -58,7 +58,7 @@ impl App {
                 self.articles = res.results;
                 self.next_page_cursor = res.next_page_cursor;
                 self.current_cursor = cursor;
-                self.selected_index = 0;
+                self.table_state.select(Some(0));
                 self.error = None;
             }
             Err(e) => {
@@ -68,7 +68,7 @@ impl App {
     }
 
     async fn fetch_article_content(&mut self, doc: Document, width: u16) {
-        match self.client.list_documents(&self.location, Some(doc.id.clone()), true).await {
+        match self.client.list_documents(&self.location, None, Some(doc.id.clone()), true).await {
             Ok(res) => {
                 if let Some(article) = res.results.into_iter().next() {
                     let content = if let Some(html) = &article.html_content {
@@ -99,12 +99,12 @@ impl App {
                 // Update local state
                 if let ViewState::Read { ref mut doc, .. } = self.view {
                     if doc.id == doc_id {
-                        doc.seen = new_seen;
+                        doc.first_opened_at = if new_seen { Some("local".to_string()) } else { None };
                     }
                 }
                 for doc in &mut self.articles {
                     if doc.id == doc_id {
-                        doc.seen = new_seen;
+                        doc.first_opened_at = if new_seen { Some("local".to_string()) } else { None };
                     }
                 }
             }
@@ -122,9 +122,17 @@ impl App {
             Ok(_) => {
                 // Remove from local list if present
                 self.articles.retain(|d| d.id != doc_id);
-                if self.selected_index >= self.articles.len() && !self.articles.is_empty() {
-                    self.selected_index = self.articles.len() - 1;
+                
+                // Adjust selection if it went out of bounds
+                let len = self.articles.len();
+                if let Some(selected) = self.table_state.selected() {
+                    if selected >= len && len > 0 {
+                        self.table_state.select(Some(len - 1));
+                    } else if len == 0 {
+                        self.table_state.select(None);
+                    }
                 }
+
                 let mut go_back = false;
                 if let ViewState::Read { doc, .. } = &self.view {
                     if doc.id == doc_id {
@@ -169,7 +177,7 @@ async fn main() -> Result<()> {
                 f,
                 &app.view,
                 &app.articles,
-                app.selected_index,
+                &mut app.table_state,
                 &app.location,
                 &app.error,
                 app.scroll_offset,
@@ -192,33 +200,59 @@ async fn main() -> Result<()> {
                                 break;
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
-                                if !app.articles.is_empty() && app.selected_index < app.articles.len() - 1 {
-                                    app.selected_index += 1;
+                                if !app.articles.is_empty() {
+                                    let i = match app.table_state.selected() {
+                                        Some(i) => {
+                                            if i >= app.articles.len() - 1 {
+                                                0
+                                            } else {
+                                                i + 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.table_state.select(Some(i));
                                 }
                             }
                             KeyCode::Char('k') | KeyCode::Up => {
-                                if app.selected_index > 0 {
-                                    app.selected_index -= 1;
+                                if !app.articles.is_empty() {
+                                    let i = match app.table_state.selected() {
+                                        Some(i) => {
+                                            if i == 0 {
+                                                app.articles.len() - 1
+                                            } else {
+                                                i - 1
+                                            }
+                                        }
+                                        None => 0,
+                                    };
+                                    app.table_state.select(Some(i));
                                 }
                             }
                             KeyCode::Enter => {
-                                if let Some(doc) = app.articles.get(app.selected_index) {
-                                    let doc_clone = doc.clone();
-                                    let width = terminal.size()?.width;
-                                    app.fetch_article_content(doc_clone, width).await;
+                                if let Some(i) = app.table_state.selected() {
+                                    if let Some(doc) = app.articles.get(i) {
+                                        let doc_clone = doc.clone();
+                                        let width = terminal.size()?.width;
+                                        app.fetch_article_content(doc_clone, width).await;
+                                    }
                                 }
                             }
                             KeyCode::Char('m') => {
-                                if let Some(doc) = app.articles.get(app.selected_index) {
-                                    let id = doc.id.clone();
-                                    let seen = doc.seen;
-                                    app.toggle_seen(id, seen).await;
+                                if let Some(i) = app.table_state.selected() {
+                                    if let Some(doc) = app.articles.get(i) {
+                                        let id = doc.id.clone();
+                                        let seen = doc.is_seen();
+                                        app.toggle_seen(id, seen).await;
+                                    }
                                 }
                             }
                             KeyCode::Char('a') => {
-                                if let Some(doc) = app.articles.get(app.selected_index) {
-                                    let id = doc.id.clone();
-                                    app.archive_document(id).await;
+                                if let Some(i) = app.table_state.selected() {
+                                    if let Some(doc) = app.articles.get(i) {
+                                        let id = doc.id.clone();
+                                        app.archive_document(id).await;
+                                    }
                                 }
                             }
                             KeyCode::Char('1') => {
@@ -268,7 +302,7 @@ async fn main() -> Result<()> {
                                 }
 
                                 // Auto-mark as read if near bottom
-                                if !doc.seen && app.scroll_offset + height >= lines.saturating_sub(2) {
+                                if !doc.is_seen() && app.scroll_offset + height >= lines.saturating_sub(2) {
                                     let id = doc.id.clone();
                                     app.toggle_seen(id, false).await;
                                 }
@@ -278,7 +312,7 @@ async fn main() -> Result<()> {
                             }
                             KeyCode::Char('m') => {
                                 let id = doc.id.clone();
-                                let seen = doc.seen;
+                                let seen = doc.is_seen();
                                 app.toggle_seen(id, seen).await;
                             }
                             KeyCode::Char('a') => {
