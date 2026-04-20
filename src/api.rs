@@ -2,6 +2,8 @@ use anyhow::Result;
 use reqwest::{header, Client as HttpClient};
 use serde::{Deserialize, Serialize};
 
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
@@ -19,6 +21,7 @@ pub struct Document {
     pub reading_progress: f32,
     pub published_date: Option<String>,
     pub summary: Option<String>,
+    pub tags: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl Document {
@@ -33,6 +36,10 @@ pub struct UpdateDocumentRequest {
     pub location: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seen: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading_progress: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,12 +70,15 @@ impl ReaderClient {
 
     pub async fn list_documents(
         &self,
-        location: &str,
+        location: Option<&str>,
         page_cursor: Option<String>,
         document_id: Option<String>,
         with_html: bool,
     ) -> Result<ListResponse> {
-        let mut query = vec![("location", location.to_string())];
+        let mut query = Vec::new();
+        if let Some(loc) = location {
+            query.push(("location", loc.to_string()));
+        }
         if let Some(cursor) = page_cursor {
             query.push(("pageCursor", cursor));
         }
@@ -100,7 +110,8 @@ impl ReaderClient {
             .patch(&format!("https://readwise.io/api/v3/update/{}/", id))
             .json(&update)
             .send()
-            .await?;
+            .await?
+            .error_for_status()?;
 
         Ok(())
     }

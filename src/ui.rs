@@ -1,9 +1,12 @@
 use crate::api::Document;
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Tabs, Wrap},
+    widgets::{
+        Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Table, TableState, Tabs, Wrap,
+    },
     Frame,
 };
 use url::Url;
@@ -58,7 +61,7 @@ pub fn draw(
     // 2. Main Content
     match view {
         ViewState::List => {
-            let header_cells = ["", "Title", "Author", "Source"]
+            let header_cells = ["", "Title", "Author", "Source", "Progress"]
                 .iter()
                 .map(|h| Cell::from(*h).style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
             let header = Row::new(header_cells)
@@ -77,12 +80,20 @@ pub fn draw(
                 };
 
                 let unread_marker = if !doc.is_seen() { "●" } else { " " };
+                let progress = if doc.reading_progress > 0.0 {
+                    format!("{:.0}%", doc.reading_progress * 100.0)
+                } else if doc.is_seen() {
+                    "0%".to_string()
+                } else {
+                    "".to_string()
+                };
 
                 Row::new(vec![
                     Cell::from(unread_marker).style(Style::default().fg(Color::Yellow)),
                     Cell::from(doc.title.clone()),
                     Cell::from(doc.author.as_deref().unwrap_or("Unknown")),
                     Cell::from(source_display),
+                    Cell::from(progress),
                 ])
             });
 
@@ -92,7 +103,8 @@ pub fn draw(
                     Constraint::Length(1),
                     Constraint::Percentage(40),
                     Constraint::Percentage(20),
-                    Constraint::Percentage(40),
+                    Constraint::Percentage(30),
+                    Constraint::Length(8),
                 ],
             )
             .header(header)
@@ -108,6 +120,20 @@ pub fn draw(
                 .wrap(Wrap { trim: true })
                 .scroll((scroll_offset, 0));
             f.render_widget(p, chunks[1]);
+
+            // Add scrollbar
+            let lines = content.lines().count();
+            if lines > 0 {
+                let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("↑"))
+                    .end_symbol(Some("↓"));
+                let mut scrollbar_state = ScrollbarState::new(lines).position(scroll_offset as usize);
+                f.render_stateful_widget(
+                    scrollbar,
+                    chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+                    &mut scrollbar_state,
+                );
+            }
         }
     }
 

@@ -29,6 +29,8 @@ struct App {
     error: Option<String>,
     scroll_offset: u16,
     last_feed_update: Instant,
+    pending_progress: Option<(String, String, f32)>, // (id, url, progress)
+    last_scroll_event: Instant,
 }
 
 impl App {
@@ -46,16 +48,32 @@ impl App {
             error: None,
             scroll_offset: 0,
             last_feed_update: Instant::now(),
+            pending_progress: None,
+            last_scroll_event: Instant::now(),
         }
     }
 
     async fn fetch_articles(&mut self, cursor: Option<String>, push_history: bool) {
-        match self.client.list_documents(&self.location, cursor.clone(), None, false).await {
+        match self.client.list_documents(Some(&self.location), cursor.clone(), None, false).await {
             Ok(res) => {
                 if push_history {
                     self.prev_page_cursors.push(self.current_cursor.clone());
                 }
-                self.articles = res.results;
+                let mut results = res.results;
+                for doc in &mut results {
+                    // Always try to extract progress from tags first
+                    if let Some(tags) = &doc.tags {
+                        for tag in tags.keys() {
+                            if tag.starts_with("progress:") {
+                                if let Ok(p) = tag["progress:".len()..].parse::<f32>() {
+                                    doc.reading_progress = p / 100.0;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                self.articles = results;
                 self.next_page_cursor = res.next_page_cursor;
                 self.current_cursor = cursor;
                 self.table_state.select(Some(0));
@@ -67,10 +85,22 @@ impl App {
         }
     }
 
-    async fn fetch_article_content(&mut self, doc: Document, width: u16) {
-        match self.client.list_documents(&self.location, None, Some(doc.id.clone()), true).await {
+    async fn fetch_article_content(&mut self, doc: Document, width: u16, height: u16) {
+        match self.client.list_documents(None, None, Some(doc.id.clone()), true).await {
             Ok(res) => {
-                if let Some(article) = res.results.into_iter().next() {
+                if let Some(mut article) = res.results.into_iter().next() {
+                    // Always try to extract progress from tags first
+                    if let Some(tags) = &article.tags {
+                        for tag in tags.keys() {
+                            if tag.starts_with("progress:") {
+                                if let Ok(p) = tag["progress:".len()..].parse::<f32>() {
+                                    article.reading_progress = p / 100.0;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
                     let content = if let Some(html) = &article.html_content {
                         match html2text::from_read(html.as_bytes(), width as usize - 4) {
                             Ok(text) => text,
@@ -79,8 +109,30 @@ impl App {
                     } else {
                         "No content available.".to_string()
                     };
-                    self.view = ViewState::Read { doc: article, content };
-                    self.scroll_offset = 0;
+                    
+                    let lines = content.lines().count() as f32;
+                    let v_height = height.saturating_sub(4) as f32;
+                    let initial_scroll = if article.reading_progress > 0.0 && lines > v_height {
+                        (article.reading_progress * lines - v_height).max(0.0) as u16
+                    } else {
+                        0
+                    };
+
+                    // Mark as seen locally
+                    let mut article_clone = article.clone();
+                    if article_clone.first_opened_at.is_none() {
+                        article_clone.first_opened_at = Some("local".to_string());
+                        let id = article_clone.id.clone();
+                        let url = article_clone.source_url.clone();
+                        for d in &mut self.articles {
+                            if d.id == id || (d.source_url == url && !url.is_empty()) {
+                                d.first_opened_at = Some("local".to_string());
+                            }
+                        }
+                    }
+
+                    self.view = ViewState::Read { doc: article_clone, content };
+                    self.scroll_offset = initial_scroll;
                 }
             }
             Err(e) => {
@@ -89,22 +141,55 @@ impl App {
         }
     }
 
-    async fn toggle_seen(&mut self, doc_id: String, current_seen: bool) {
+    async fn toggle_seen(&mut self, doc_id: String, source_url: String, current_seen: bool) {
         let new_seen = !current_seen;
+        let mut tags_to_update = None;
+        if new_seen {
+            // Get current tag names to preserve them, but set progress to 100
+            let mut current_tag_names = Vec::new();
+            if let ViewState::Read { ref mut doc, .. } = self.view {
+                if doc.id == doc_id || doc.source_url == source_url {
+                    current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+                }
+            }
+            if current_tag_names.is_empty() {
+                for doc in &self.articles {
+                    if doc.id == doc_id || (doc.source_url == source_url && !source_url.is_empty()) {
+                        current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+                        break;
+                    }
+                }
+            }
+            let mut new_tags: Vec<String> = current_tag_names
+                .into_iter()
+                .filter(|t| !t.starts_with("progress:"))
+                .collect();
+            new_tags.push("progress:100".to_string());
+            tags_to_update = Some(new_tags);
+        }
+
         match self.client.update_document(&doc_id, UpdateDocumentRequest {
             seen: Some(new_seen),
             location: None,
+            reading_progress: if new_seen { Some(1.0) } else { None },
+            tags: tags_to_update.clone(),
         }).await {
             Ok(_) => {
                 // Update local state
                 if let ViewState::Read { ref mut doc, .. } = self.view {
-                    if doc.id == doc_id {
+                    if doc.id == doc_id || doc.source_url == source_url {
                         doc.first_opened_at = if new_seen { Some("local".to_string()) } else { None };
+                        if new_seen {
+                            doc.reading_progress = 1.0;
+                        }
                     }
                 }
                 for doc in &mut self.articles {
-                    if doc.id == doc_id {
+                    if doc.id == doc_id || (doc.source_url == source_url && !source_url.is_empty()) {
                         doc.first_opened_at = if new_seen { Some("local".to_string()) } else { None };
+                        if new_seen {
+                            doc.reading_progress = 1.0;
+                        }
                     }
                 }
             }
@@ -114,14 +199,36 @@ impl App {
         }
     }
 
-    async fn archive_document(&mut self, doc_id: String) {
-        match self.client.update_document(&doc_id, UpdateDocumentRequest {
-            seen: Some(true),
-            location: Some("archive".to_string()),
-        }).await {
-            Ok(_) => {
+    async fn archive_document(&mut self, doc_id: String, source_url: String) {
+    let mut current_tag_names = Vec::new();
+    if let ViewState::Read { ref mut doc, .. } = self.view {
+        if doc.id == doc_id || doc.source_url == source_url {
+            current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+        }
+    }
+    if current_tag_names.is_empty() {
+        for doc in &self.articles {
+            if doc.id == doc_id || (doc.source_url == source_url && !source_url.is_empty()) {
+                current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+                break;
+            }
+        }
+    }
+    let mut new_tags: Vec<String> = current_tag_names
+        .into_iter()
+        .filter(|t| !t.starts_with("progress:"))
+        .collect();
+    new_tags.push("progress:100".to_string());
+
+    match self.client.update_document(&doc_id, UpdateDocumentRequest {
+        seen: Some(true),
+        location: Some("archive".to_string()),
+        reading_progress: Some(1.0),
+        tags: Some(new_tags),
+    }).await {
+        Ok(_) => {
                 // Remove from local list if present
-                self.articles.retain(|d| d.id != doc_id);
+                self.articles.retain(|d| d.id != doc_id && (d.source_url != source_url || source_url.is_empty()));
                 
                 // Adjust selection if it went out of bounds
                 let len = self.articles.len();
@@ -135,7 +242,7 @@ impl App {
 
                 let mut go_back = false;
                 if let ViewState::Read { doc, .. } = &self.view {
-                    if doc.id == doc_id {
+                    if doc.id == doc_id || doc.source_url == source_url {
                         go_back = true;
                     }
                 }
@@ -145,6 +252,51 @@ impl App {
             }
             Err(e) => {
                 self.error = Some(e.to_string());
+            }
+        }
+    }
+
+    async fn update_reading_progress(&mut self, doc_id: String, source_url: String, progress: f32) {
+        // Update local state
+        let mut found = false;
+        let mut current_tag_names = Vec::new();
+        if let ViewState::Read { ref mut doc, .. } = self.view {
+            if doc.id == doc_id || doc.source_url == source_url {
+                doc.reading_progress = progress;
+                current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+                found = true;
+            }
+        }
+        for doc in &mut self.articles {
+            if doc.id == doc_id || (doc.source_url == source_url && !source_url.is_empty()) {
+                doc.reading_progress = progress;
+                if current_tag_names.is_empty() {
+                    current_tag_names = doc.tags.as_ref().map(|t| t.keys().cloned().collect()).unwrap_or_default();
+                }
+                found = true;
+            }
+        }
+
+        if found {
+            // Update tags with new progress
+            let progress_tag = format!("progress:{}", (progress * 100.0).round() as i32);
+            let mut new_tags: Vec<String> = current_tag_names
+                .into_iter()
+                .filter(|t| !t.starts_with("progress:"))
+                .collect();
+            new_tags.push(progress_tag);
+
+            if let Err(e) = self.client.update_document(&doc_id, UpdateDocumentRequest {
+                reading_progress: Some(progress),
+                location: None,
+                seen: None,
+                tags: Some(new_tags.clone()),
+            }).await {
+                self.error = Some(format!("Failed to update progress: {}", e));
+            } else {
+                // Update local tags too (we don't have the full Value but we can clear/repopulate the keys if we want, 
+                // but local state just needs the progress field updated which we already did)
+                // For simplicity, we just leave the local tags as they were, but progress is updated.
             }
         }
     }
@@ -172,6 +324,14 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Handle debounced progress updates
+        if let Some((id, url, progress)) = app.pending_progress.clone() {
+            if app.last_scroll_event.elapsed() >= Duration::from_secs(2) {
+                app.update_reading_progress(id, url, progress).await;
+                app.pending_progress = None;
+            }
+        }
+
         terminal.draw(|f| {
             ui::draw(
                 f,
@@ -193,7 +353,7 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    match &app.view {
+                    match &mut app.view {
                         ViewState::List => match key.code {
                             KeyCode::Char('q') => {
                                 should_quit = true;
@@ -233,8 +393,8 @@ async fn main() -> Result<()> {
                                 if let Some(i) = app.table_state.selected() {
                                     if let Some(doc) = app.articles.get(i) {
                                         let doc_clone = doc.clone();
-                                        let width = terminal.size()?.width;
-                                        app.fetch_article_content(doc_clone, width).await;
+                                        let size = terminal.size()?;
+                                        app.fetch_article_content(doc_clone, size.width, size.height).await;
                                     }
                                 }
                             }
@@ -242,8 +402,9 @@ async fn main() -> Result<()> {
                                 if let Some(i) = app.table_state.selected() {
                                     if let Some(doc) = app.articles.get(i) {
                                         let id = doc.id.clone();
+                                        let url = doc.source_url.clone();
                                         let seen = doc.is_seen();
-                                        app.toggle_seen(id, seen).await;
+                                        app.toggle_seen(id, url, seen).await;
                                     }
                                 }
                             }
@@ -251,7 +412,8 @@ async fn main() -> Result<()> {
                                 if let Some(i) = app.table_state.selected() {
                                     if let Some(doc) = app.articles.get(i) {
                                         let id = doc.id.clone();
-                                        app.archive_document(id).await;
+                                        let url = doc.source_url.clone();
+                                        app.archive_document(id, url).await;
                                     }
                                 }
                             }
@@ -291,33 +453,94 @@ async fn main() -> Result<()> {
                         },
                         ViewState::Read { doc, content } => match key.code {
                             KeyCode::Esc | KeyCode::Char('q') => {
+                                // Flush pending progress immediately
+                                if let Some((id, url, progress)) = app.pending_progress.take() {
+                                    app.update_reading_progress(id, url, progress).await;
+                                } else {
+                                    let lines = content.lines().count() as f32;
+                                    let height = terminal.size()?.height.saturating_sub(4) as f32;
+                                    let progress = if lines > height {
+                                        (app.scroll_offset as f32 + height) / lines
+                                    } else {
+                                        1.0
+                                    };
+                                    let doc_id = doc.id.clone();
+                                    let source_url = doc.source_url.clone();
+                                    app.update_reading_progress(doc_id, source_url, progress.min(1.0)).await;
+                                }
+
                                 app.view = ViewState::List;
                                 app.scroll_offset = 0;
                             }
                             KeyCode::Char('j') | KeyCode::Down => {
-                                let lines = content.lines().count() as u16;
+                                let lines_count = content.lines().count();
+                                let lines = lines_count as u16;
                                 let height = terminal.size()?.height.saturating_sub(4); // -3 for header, -1 for footer
                                 if app.scroll_offset + height < lines {
                                     app.scroll_offset = app.scroll_offset.saturating_add(1);
                                 }
 
+                                // Update local progress
+                                let progress = if lines_count as f32 > height as f32 {
+                                    (app.scroll_offset as f32 + height as f32) / lines_count as f32
+                                } else {
+                                    1.0
+                                };
+                                let p = progress.min(1.0);
+                                doc.reading_progress = p;
+                                let doc_id = doc.id.clone();
+                                let source_url = doc.source_url.clone();
+                                for d in &mut app.articles {
+                                    if d.id == doc_id || (d.source_url == source_url && !source_url.is_empty()) {
+                                        d.reading_progress = p;
+                                    }
+                                }
+
+                                // Set pending update
+                                app.pending_progress = Some((doc_id, source_url, p));
+                                app.last_scroll_event = Instant::now();
+
                                 // Auto-mark as read if near bottom
                                 if !doc.is_seen() && app.scroll_offset + height >= lines.saturating_sub(2) {
                                     let id = doc.id.clone();
-                                    app.toggle_seen(id, false).await;
+                                    let url = doc.source_url.clone();
+                                    app.toggle_seen(id, url, false).await;
                                 }
                             }
                             KeyCode::Char('k') | KeyCode::Up => {
                                 app.scroll_offset = app.scroll_offset.saturating_sub(1);
+                                
+                                let lines_count = content.lines().count();
+                                let height = terminal.size()?.height.saturating_sub(4);
+                                let progress = if lines_count as f32 > height as f32 {
+                                    (app.scroll_offset as f32 + height as f32) / lines_count as f32
+                                } else {
+                                    1.0
+                                };
+                                let p = progress.min(1.0);
+                                doc.reading_progress = p;
+                                let doc_id = doc.id.clone();
+                                let source_url = doc.source_url.clone();
+                                for d in &mut app.articles {
+                                    if d.id == doc_id || (d.source_url == source_url && !source_url.is_empty()) {
+                                        d.reading_progress = p;
+                                    }
+                                }
+
+                                // Set pending update
+                                app.pending_progress = Some((doc_id, source_url, p));
+                                app.last_scroll_event = Instant::now();
                             }
                             KeyCode::Char('m') => {
                                 let id = doc.id.clone();
+                                let url = doc.source_url.clone();
                                 let seen = doc.is_seen();
-                                app.toggle_seen(id, seen).await;
+                                app.toggle_seen(id, url, seen).await;
                             }
                             KeyCode::Char('a') => {
                                 let id = doc.id.clone();
-                                app.archive_document(id).await;
+                                let url = doc.source_url.clone();
+                                app.archive_document(id, url).await;
                             }
                             _ => {}
                         },
