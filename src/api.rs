@@ -1,5 +1,5 @@
 use anyhow::Result;
-use reqwest::{header, Client as HttpClient};
+use reqwest::{Client as HttpClient, header};
 use serde::{Deserialize, Serialize};
 
 use std::collections::HashMap;
@@ -56,7 +56,8 @@ pub struct ReaderClient {
 impl ReaderClient {
     pub fn new(token: String) -> Self {
         let mut headers = header::HeaderMap::new();
-        let mut auth_value = header::HeaderValue::from_str(&format!("Token {}", token)).expect("Invalid token");
+        let mut auth_value =
+            header::HeaderValue::from_str(&format!("Token {}", token)).expect("Invalid token");
         auth_value.set_sensitive(true);
         headers.insert(header::AUTHORIZATION, auth_value);
 
@@ -101,11 +102,7 @@ impl ReaderClient {
         Ok(res)
     }
 
-    pub async fn update_document(
-        &self,
-        id: &str,
-        update: UpdateDocumentRequest,
-    ) -> Result<()> {
+    pub async fn update_document(&self, id: &str, update: UpdateDocumentRequest) -> Result<()> {
         self.http
             .patch(&format!("https://readwise.io/api/v3/update/{}/", id))
             .json(&update)

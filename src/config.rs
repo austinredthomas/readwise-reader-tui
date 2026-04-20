@@ -1,8 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
 use figment::{
-    providers::{Env, Format, Toml},
     Figment,
+    providers::{Env, Format, Toml},
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -64,7 +64,9 @@ pub fn load_config() -> Result<AppConfig> {
     }
 
     if config.token.is_empty() {
-        anyhow::bail!("Readwise API token is missing. Please provide it via READWISE_TOKEN env var, --token flag, or in config.toml");
+        anyhow::bail!(
+            "Readwise API token is missing. Please provide it via READWISE_TOKEN env var, --token flag, or in config.toml"
+        );
     }
 
     Ok(config)

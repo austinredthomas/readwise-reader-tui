@@ -1,5 +1,6 @@
 use crate::api::Document;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -7,7 +8,6 @@ use ratatui::{
         Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
         Table, TableState, Tabs, Wrap,
     },
-    Frame,
 };
 use url::Url;
 
@@ -53,9 +53,17 @@ pub fn draw(
         _ => 0,
     };
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(" Readwise Reader "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Readwise Reader "),
+        )
         .select(current_tab)
-        .highlight_style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
     f.render_widget(tabs, chunks[0]);
 
     // 2. Main Content
@@ -63,7 +71,13 @@ pub fn draw(
         ViewState::List => {
             let header_cells = ["", "Title", "Author", "Source", "Progress"]
                 .iter()
-                .map(|h| Cell::from(*h).style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+                .map(|h| {
+                    Cell::from(*h).style(
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                });
             let header = Row::new(header_cells)
                 .style(Style::default().bg(Color::DarkGray))
                 .height(1)
@@ -72,9 +86,17 @@ pub fn draw(
             let rows = articles.iter().map(|doc| {
                 // Better source display logic
                 let source_display = if let Some(sn) = &doc.site_name {
-                    if sn != "Reader RSS" { sn.clone() } else { get_hostname(&doc.source_url) }
+                    if sn != "Reader RSS" {
+                        sn.clone()
+                    } else {
+                        get_hostname(&doc.source_url)
+                    }
                 } else if let Some(s) = &doc.source {
-                    if s != "Reader RSS" { s.clone() } else { get_hostname(&doc.source_url) }
+                    if s != "Reader RSS" {
+                        s.clone()
+                    } else {
+                        get_hostname(&doc.source_url)
+                    }
                 } else {
                     get_hostname(&doc.source_url)
                 };
@@ -108,7 +130,11 @@ pub fn draw(
                 ],
             )
             .header(header)
-            .block(Block::default().borders(Borders::ALL).title(format!(" {} ", location.to_uppercase())))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} ", location.to_uppercase())),
+            )
             .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol(">> ");
 
@@ -116,7 +142,11 @@ pub fn draw(
         }
         ViewState::Read { doc, content } => {
             let p = Paragraph::new(content.as_str())
-                .block(Block::default().borders(Borders::ALL).title(format!(" {} ", doc.title)))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {} ", doc.title)),
+                )
                 .wrap(Wrap { trim: true })
                 .scroll((scroll_offset, 0));
             f.render_widget(p, chunks[1]);
@@ -127,10 +157,14 @@ pub fn draw(
                 let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(Some("↑"))
                     .end_symbol(Some("↓"));
-                let mut scrollbar_state = ScrollbarState::new(lines).position(scroll_offset as usize);
+                let mut scrollbar_state =
+                    ScrollbarState::new(lines).position(scroll_offset as usize);
                 f.render_stateful_widget(
                     scrollbar,
-                    chunks[1].inner(Margin { vertical: 1, horizontal: 0 }),
+                    chunks[1].inner(Margin {
+                        vertical: 1,
+                        horizontal: 0,
+                    }),
                     &mut scrollbar_state,
                 );
             }
@@ -139,8 +173,12 @@ pub fn draw(
 
     // 3. Footer
     let help_text = match view {
-        ViewState::List => " [j/k] Scroll | [Enter] Read | [m] Toggle Read | [a] Archive | [1-4] Tabs | [n/p] Page | [q] Quit ",
-        ViewState::Read { .. } => " [j/k] Scroll | [m] Toggle Read | [a] Archive | [Esc/q] Back to list ",
+        ViewState::List => {
+            " [j/k] Scroll | [Enter] Read | [m] Toggle Read | [i] Inbox | [l] Later | [a] Archive | [1-4] Tabs | [n/p] Page | [q] Quit "
+        }
+        ViewState::Read { .. } => {
+            " [j/k] Scroll | [m] Toggle Read | [i] Inbox | [l] Later | [a] Archive | [Esc/q] Back to list "
+        }
     };
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(help_text, Style::default().add_modifier(Modifier::DIM)),
